@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+import os
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+from pathlib import Path
+
+PULSE_PORT = 4713
+
+CONFIG_PATH = Path.home() / ".config" / "claude-code-sandbox" / "config.toml"
+SETTINGS_JSON = Path.home() / ".claude" / "settings.json"
+SESSION_DIR = Path.home() / ".local" / "share" / "claude-code-sandbox" / "claude"
+PROXY_PORT = 9876
+DAEMON = Path(__file__).parent / "csb-daemon"
+
+
+def load_config():
+    if not CONFIG_PATH.exists():
+        print(f"Error: config not found at {CONFIG_PATH}", file=sys.stderr)
+        print("Create it with a [workspaces] section and an image key.", file=sys.stderr)
+        sys.exit(1)
+    with open(CONFIG_PATH, "rb") as f:
+        return tomllib.load(f)
+
+
+def start_daemon():
+    import socket
+    proc = subprocess.Popen([sys.executable, str(DAEMON)])
+    for _ in range(30):
+        try:
+            with socket.create_connection(("127.0.0.1", PROXY_PORT), timeout=0.1):
+                return proc
+        except OSError:
+            time.sleep(0.1)
+    proc.terminate()
+    print("Error: csb-daemon failed to start", file=sys.stderr)
+    sys.exit(1)
+
+
+SANDBOX_CLAUDE_MD = Path(__file__).parent / "CLAUDE.md"
+
+
+def start_pulseaudio():
+    if not shutil.which("pulseaudio"):
+        print("[csb] pulseaudio not found — voice mode unavailable (brew install pulseaudio)", file=sys.stderr)
+        return None
+    proc = subprocess.Popen([
+        "pulseaudio",
+        "--load=module-native-protocol-tcp auth-anonymous=1",
+        "--exit-idle-time=-1",
+        "--daemonize=no",
+        "--log-target=stderr",
+    ], stderr=subprocess.DEVNULL)
+    time.sleep(1)
+    return proc
+
+
+def sync_settings():
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    if SETTINGS_JSON.exists():
+        shutil.copy2(SETTINGS_JSON, SESSION_DIR / "settings.json")
+    if SANDBOX_CLAUDE_MD.exists():
+        shutil.copy2(SANDBOX_CLAUDE_MD, SESSION_DIR / "CLAUDE.md")
+
+
+def main():
+    config = load_config()
+    image = config.get("image", "claude-code-sandbox:latest")
+    workspaces = config.get("workspaces", {})
+
+    if not workspaces:
+        print("Error: no workspaces defined in config.toml", file=sys.stderr)
+        sys.exit(1)
+
+    sync_settings()
+
+    mounts = []
+    for name, path in workspaces.items():
+        host_path = Path(path).expanduser().resolve()
+        mounts += ["-v", f"{host_path}:/workspaces/{name}"]
+
+    mounts += ["-v", f"{SESSION_DIR}:/home/node/.claude"]
+
+    daemon = start_daemon()
+    pulse = start_pulseaudio()
+
+    cmd = [
+        "podman", "run", "-it", "--rm",
+        "--cap-add=NET_ADMIN",
+        "--cap-add=NET_RAW",
+        *mounts,
+        "-e", f"CSB_PROXY_HOST=host.containers.internal",
+        "-e", f"CSB_PROXY_PORT={PROXY_PORT}",
+        "-e", f"PULSE_SERVER=tcp:host.containers.internal:{PULSE_PORT}",
+        image,
+    ]
+
+    try:
+        result = subprocess.run(cmd)
+        sys.exit(result.returncode)
+    finally:
+        daemon.terminate()
+        daemon.wait()
+        if pulse:
+            pulse.terminate()
+            pulse.wait()
+
+
+if __name__ == "__main__":
+    main()

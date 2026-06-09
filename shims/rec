@@ -1,0 +1,6 @@
+#!/bin/bash
+if [ -n "$PULSE_SERVER" ]; then
+    exec /usr/bin/rec -t pulseaudio "$@"
+else
+    exec /usr/bin/rec "$@"
+fi

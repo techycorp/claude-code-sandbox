@@ -1,0 +1,30 @@
+#!/usr/bin/env node
+const net = require('net');
+const path = require('path');
+
+const PROXY_HOST = process.env.CSB_PROXY_HOST || 'host.containers.internal';
+const PROXY_PORT = parseInt(process.env.CSB_PROXY_PORT || '9876', 10);
+const args = [path.basename(process.argv[1]), ...process.argv.slice(2)];
+
+const client = net.createConnection({ host: PROXY_HOST, port: PROXY_PORT }, () => {
+  client.write(JSON.stringify({ args, cwd: process.cwd() }) + '\n');
+});
+
+let buffer = '';
+client.on('data', (data) => {
+  buffer += data.toString();
+  const lines = buffer.split('\n');
+  buffer = lines.pop();
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.type === 'stdout') process.stdout.write(msg.data);
+    else if (msg.type === 'stderr' || msg.type === 'error') process.stderr.write(msg.data);
+    else if (msg.type === 'exit') { client.destroy(); process.exit(msg.code); }
+  }
+});
+
+client.on('error', () => {
+  process.stderr.write('[csb] host proxy not running — re-run csb\n');
+  process.exit(1);
+});
