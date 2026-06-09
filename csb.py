@@ -13,7 +13,8 @@ CONFIG_PATH = Path.home() / ".config" / "claude-code-sandbox" / "config.toml"
 SETTINGS_JSON = Path.home() / ".claude" / "settings.json"
 SESSION_DIR = Path.home() / ".local" / "share" / "claude-code-sandbox" / "claude"
 PROXY_PORT = 9876
-DAEMON = Path(__file__).parent / "csb-daemon"
+_daemon_dir = Path(__file__).parent
+DAEMON = _daemon_dir / "csb-daemon.py" if (_daemon_dir / "csb-daemon.py").exists() else _daemon_dir / "csb-daemon"
 
 
 def load_config():

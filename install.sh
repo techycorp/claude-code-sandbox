@@ -26,8 +26,9 @@ podman build -t "$IMAGE" "$REPO_DIR"
 
 info "Installing csb and csb-daemon to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
-cp "$REPO_DIR/csb" "$BIN_DIR/csb"
-cp "$REPO_DIR/csb-daemon" "$BIN_DIR/csb-daemon"
+cp "$REPO_DIR/csb.py" "$BIN_DIR/csb"
+cp "$REPO_DIR/csb-daemon.py" "$BIN_DIR/csb-daemon"
+cp "$REPO_DIR/daemon_logic.py" "$BIN_DIR/daemon_logic.py"
 chmod +x "$BIN_DIR/csb" "$BIN_DIR/csb-daemon"
 
 info "Syncing CLAUDE.md to session directory..."
