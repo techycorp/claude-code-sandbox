@@ -5,6 +5,14 @@ IFS=$'\n\t'
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 
+# Reset chain policies to ACCEPT before flushing. On a re-run (this script is
+# safe to invoke repeatedly), a prior run may have left OUTPUT/INPUT at DROP —
+# flushing rules without resetting policy first would silently block the
+# DNS/curl calls this script itself needs to rebuild the allow-list.
+iptables -P INPUT ACCEPT
+iptables -P OUTPUT ACCEPT
+iptables -P FORWARD ACCEPT
+
 # Flush existing rules and delete existing ipsets
 iptables -F
 iptables -X
@@ -68,12 +76,13 @@ for domain in \
     "api.anthropic.com" \
     "sentry.io" \
     "statsig.anthropic.com" \
-    "statsig.com"; do
+    "statsig.com" \
+    "host.docker.internal"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
-        echo "ERROR: Failed to resolve $domain"
-        exit 1
+        echo "WARNING: Failed to resolve $domain, skipping"
+        continue
     fi
 
     while read -r ip; do
@@ -98,6 +107,17 @@ echo "Host network detected as: $HOST_NETWORK"
 
 iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
 iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+
+# Allow dev VM networks (e.g. Colima 'default' VM, reachable via a separate
+# vmnet bridge not covered by HOST_NETWORK above)
+if [ -n "${CSB_DEV_NETWORKS:-}" ]; then
+    IFS=':' read -ra dev_nets <<< "$CSB_DEV_NETWORKS"
+    for net in "${dev_nets[@]}"; do
+        echo "Adding dev network $net"
+        iptables -A INPUT -s "$net" -j ACCEPT
+        iptables -A OUTPUT -d "$net" -j ACCEPT
+    done
+fi
 
 # Set default policies to DROP
 iptables -P INPUT DROP

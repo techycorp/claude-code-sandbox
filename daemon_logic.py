@@ -20,19 +20,9 @@ def load_allowed():
     return load_config().get("proxy", {}).get("allowed_commands", [])
 
 
-def load_workspace_map():
-    workspaces = load_config().get("workspaces", {})
-    return {
-        f"/workspaces/{name}": str(Path(path).expanduser().resolve())
-        for name, path in workspaces.items()
-    }
-
-
-def translate_cwd(cwd: str, workspace_map: dict) -> str:
-    for container_path, host_path in workspace_map.items():
-        if cwd == container_path or cwd.startswith(container_path + "/"):
-            return host_path + cwd[len(container_path):]
-    return None
+def translate_cwd(cwd: str) -> str:
+    # Container paths match host paths — no translation needed
+    return cwd if cwd else None
 
 
 def is_blocked(args):

@@ -1,0 +1,55 @@
+#!/usr/bin/env node
+// Stand-in for xclip, used only by Claude Code's Linux clipboard-image-paste
+// path. There's no X server in this container and no xclip binary would help
+// anyway — the real macOS pasteboard lives on the host. Instead this asks the
+// host's csb-daemon (the same proxy used for docker commands) to read it via
+// osascript and relays the result back, mimicking the two xclip invocations
+// the CLI actually makes:
+//   xclip -selection clipboard -t TARGETS -o
+//   xclip -selection clipboard -t image/png -o
+const net = require('net');
+
+const PROXY_HOST = process.env.CSB_PROXY_HOST || 'host.containers.internal';
+const PROXY_PORT = parseInt(process.env.CSB_PROXY_PORT || '9876', 10);
+const args = process.argv.slice(2);
+
+function queryClipboardPng(onResult) {
+  const client = net.createConnection({ host: PROXY_HOST, port: PROXY_PORT }, () => {
+    client.write(JSON.stringify({ op: 'clipboard_png' }) + '\n');
+  });
+
+  let buffer = '';
+  let pngB64 = null;
+  let exitCode = 1;
+
+  client.on('data', (data) => {
+    buffer += data.toString();
+    const lines = buffer.split('\n');
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      if (msg.type === 'png_b64') pngB64 = msg.data;
+      else if (msg.type === 'exit') { exitCode = msg.code; client.destroy(); onResult(exitCode, pngB64); }
+    }
+  });
+
+  client.on('error', () => onResult(1, null));
+}
+
+const wantsTargets = args.includes('-t') && args[args.indexOf('-t') + 1] === 'TARGETS';
+const wantsPng = args.includes('-t') && args[args.indexOf('-t') + 1] === 'image/png';
+
+if (wantsTargets) {
+  queryClipboardPng((code) => {
+    if (code === 0) process.stdout.write('image/png\n');
+    process.exit(code === 0 ? 0 : 1);
+  });
+} else if (wantsPng) {
+  queryClipboardPng((code, pngB64) => {
+    if (code === 0 && pngB64) process.stdout.write(Buffer.from(pngB64, 'base64'));
+    process.exit(code === 0 && pngB64 ? 0 : 1);
+  });
+} else {
+  process.exit(1);
+}
