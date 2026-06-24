@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 rm -f /tmp/csb-entrypoint-ready
 sudo /usr/local/bin/fix-claude-perms.sh
 sudo /usr/local/bin/init-firewall.sh

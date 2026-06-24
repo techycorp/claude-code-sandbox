@@ -32,14 +32,24 @@ else
     echo "No Docker DNS rules to restore"
 fi
 
-# Allow outbound DNS
-iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-# Allow inbound DNS responses
-iptables -A INPUT -p udp --sport 53 -j ACCEPT
-# Allow outbound SSH
-iptables -A OUTPUT -p tcp --dport 22 -j ACCEPT
-# Allow inbound SSH responses
-iptables -A INPUT -p tcp --sport 22 -m state --state ESTABLISHED -j ACCEPT
+# Allow DNS only to the resolvers actually configured for this container
+# (Docker's embedded resolver, plus whatever /etc/resolv.conf points at) —
+# NOT to any host. Open DNS-to-anywhere is a viable exfil channel (DNS
+# tunneling) independent of every other rule in this script, since it
+# doesn't require any other port to be open elsewhere.
+resolvers=$'127.0.0.11\n'
+resolvers+="$(awk '/^nameserver/ {print $2}' /etc/resolv.conf)"
+for resolver in $resolvers; do
+    echo "Allowing DNS to resolver $resolver"
+    iptables -A OUTPUT -p udp --dport 53 -d "$resolver" -j ACCEPT
+    iptables -A INPUT -p udp --sport 53 -s "$resolver" -j ACCEPT
+done
+
+# SSH is intentionally NOT given a blanket allow here. The allowed-domains
+# ipset rule added below is port-agnostic, so SSH to whitelisted hosts
+# (e.g. git@github.com) already works without it — a separate "SSH to any
+# host" rule would only add the ability to reach an arbitrary,
+# non-whitelisted host on port 22.
 # Allow localhost
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
