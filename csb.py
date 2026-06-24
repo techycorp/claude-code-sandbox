@@ -41,7 +41,7 @@ def ensure_colima():
     print("", file=sys.stderr)
     print("Create it with your directories and session storage mounted, then re-run install:", file=sys.stderr)
     print("", file=sys.stderr)
-    print("    colima start csb --cpu 4 --memory 4 --disk 20 \\", file=sys.stderr)
+    print("    colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \\", file=sys.stderr)
     print("      --mount ~/.local/share/claude-code-sandbox:w \\", file=sys.stderr)
     print("      --mount ~/src:w", file=sys.stderr)
     print("", file=sys.stderr)

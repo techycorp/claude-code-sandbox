@@ -91,7 +91,7 @@ Docker runs natively on Linux with no VM overhead.
 **macOS only:** Before installing, create the `csb` Colima VM with your session storage and project directories mounted. Mount the parent directory containing your projects — not individual project folders.
 
 ```bash
-colima start csb --cpu 4 --memory 4 --disk 20 \
+colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \
   --mount ~/.local/share/claude-code-sandbox:w \
   --mount /absolute/path/to/your/projects:w
 ```
@@ -163,8 +163,10 @@ allowed_commands = [
   "docker volume prune",
   "docker system df",
 
-  # Wildcards are supported — * matches any single token (e.g. container name)
-  # "docker exec * bundle exec rails",
+  # Wildcards are supported — * matches any single token (e.g. container name).
+  # Enumerate exact safe subcommands rather than leaving an interpreter's
+  # prefix open — see "The Whitelist Is the Ultimate Authority" below.
+  # "docker exec * bundle exec rails db:migrate",
   # "docker exec * bundle exec rspec",
   # "docker exec * yarn add",
 ]
@@ -175,12 +177,43 @@ allowed_commands = [
 `allowed_commands` entries support `*` as a wildcard matching any single token:
 
 ```toml
-"docker exec * bundle exec rails",   # matches any container name
+"docker exec * bundle exec rails db:migrate",   # matches any container name
 "docker exec * bundle exec rspec",
 "docker exec * yarn add",
 ```
 
-Only the container name is wildcarded — the command after it is exact. The proxy's blocklist independently blocks `exec` with `env`, `sh`, `bash`, etc. regardless of the whitelist.
+Only the container name is wildcarded — every other token must match exactly. Trailing args beyond the pattern (a spec file path, a package name) are still permitted, since they're just arguments to the already-pinned program, not a way to run something else.
+
+### The Whitelist Is the Ultimate Authority
+
+The whitelist guarantees one thing: only the exact program in the pattern's pinned positions can ever execute — nothing can be smuggled into the wildcard's position or inserted ahead of a fixed token. It does **not** know anything about what that program is capable of once it's running. If the program itself has a built-in "execute whatever string you hand me" mode, an open-ended pattern hands that mode straight to the proxy caller.
+
+The clearest example is `bundle exec rails`:
+
+```toml
+# DANGEROUS — runner/console/dbconsole are reachable
+"docker exec * bundle exec rails"
+```
+
+This looks like it only allows safe rails tasks, but `rails runner`, `rails console`, and `rails dbconsole` all match it too — and `runner` in particular evaluates an arbitrary Ruby string passed directly in the command itself:
+
+```bash
+docker exec myapp bundle exec rails runner "File.read('/secrets/key')"
+```
+
+That's a fundamentally different risk than something like `db:migrate`: `db:migrate` only ever runs code that's *already checked into the trusted repo* (files under `db/migrate/`). `runner` executes a string supplied at call time — the payload never has to touch disk or be part of the repo at all. The proxy call itself becomes the code execution oracle.
+
+**The fix: enumerate the exact subcommands you need instead of leaving the prefix open.**
+
+```toml
+# SAFE — only these specific tasks are reachable; runner/console/dbconsole
+# never match any pattern, so they're simply not callable through the proxy
+"docker exec * bundle exec rails db:migrate",
+"docker exec * bundle exec rails db:create",
+"docker exec * bundle exec rails db:rollback",
+```
+
+This applies to any tool with a similar eval-from-argv escape hatch — `rails runner`/`console`/`dbconsole`, `ruby -e`, `python -c`, `node -e`, and so on. Before whitelisting `<tool> <subcommand>` as an open prefix, check whether that tool has a mode whose entire purpose is "run whatever I'm handed." If it does, enumerate the literal safe invocations instead.
 
 ### How the Proxy Works
 
@@ -217,6 +250,13 @@ When the agent runs `docker compose up` from a project directory, the proxy uses
 Your `~/.claude/settings.json` is synced into the container on each `csb` launch.
 
 See [aca-safety-net](https://github.com/techycorp/aca-safety-net) for configuration options including custom rules, paranoid mode, and audit logging.
+
+**`aca-safety-net` is not a foolproof boundary.** It's a pattern-matching PreToolUse hook — it catches recognized dangerous tool calls (`rm -rf /`, obvious env-dumping commands, etc.), but anything it doesn't recognize sails through: a renamed binary, a one-off script, an unusual invocation style. Treat it as a guardrail against honest mistakes, not containment against an adversarial agent.
+
+This matters most for secrets. If a `.env`/`.envrc` file with real credentials sits in a directory mounted into the sandbox, `aca-safety-net` is not a reliable guarantee that it stays unread — there's no pattern-matching layer that can enumerate every possible way to read a file. The actual fix is to not have plaintext secrets on disk in any mounted directory in the first place:
+
+- Keep secret files out of directories mounted into `csb` (e.g. don't put `.env` inside a repo dir that's part of your project mount).
+- Prefer injecting secrets into the **app container's environment at start time** (a secrets manager like Infisical/Vault/Doppler/1Password Connect, or a host-only `--env-file` path that `csb` never sees) rather than committing them to a file the sandbox can read at all.
 
 ## Usage
 

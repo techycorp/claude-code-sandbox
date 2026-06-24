@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from daemon_logic import is_allowed, is_blocked, load_allowed, translate_cwd
+from daemon_logic import is_allowed, load_allowed, translate_cwd
 
 MACOS = platform.system() == "Darwin"
 DEFAULT_COLIMA_SOCKET = Path.home() / ".colima" / "default" / "docker.sock"
@@ -117,11 +117,6 @@ class Handler(socketserver.StreamRequestHandler):
 
             if args[0] != "docker":
                 self._send("stderr", "[csb] BLOCKED: only docker commands are permitted via the host proxy\n")
-                self._exit(1)
-                return
-
-            if is_blocked(args):
-                self._send("stderr", f"[csb] BLOCKED: {' '.join(args)}\n      env exposure is not permitted\n")
                 self._exit(1)
                 return
 
