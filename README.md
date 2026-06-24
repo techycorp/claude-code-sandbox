@@ -375,6 +375,8 @@ The `default` VM's address can change if the VM is recreated — re-check `colim
 - Read, modify, or delete files in your mounted project directories
 - Exfiltrate data via whitelisted channels (GitHub commits, npm publishes)
 - Spin up app containers via the proxy (controlled by your `allowed_commands`)
+- **DNS tunneling via the legitimate resolver.** The firewall scopes DNS egress to the container's actual configured resolver (closing the "query an arbitrary external resolver directly" channel), but it can't stop queries for `<encoded-data>.attacker-domain.com` sent *to* that legitimate resolver — DNS is recursive by design, so it will dutifully chase the query out to whatever nameserver the attacker controls. This is lower-bandwidth and a higher bar than an open resolver, but not zero. Closing it fully would require a domain-filtering DNS proxy that rejects queries for non-whitelisted names, not just IP-based reachability — a meaningfully bigger lift than what's implemented here.
+- **Broad GitHub egress.** The firewall allowlists GitHub's entire published IP ranges (web/api/git), since that's what `git`/`gh` need to function. A push to a repo you control, or a public gist, is indistinguishable at the network layer from legitimate use — it's still just HTTPS to a GitHub IP. There's no fix for this short of TLS-intercepting GitHub's own traffic to inspect content, which isn't something this project does.
 
 ## Rebuilding the Image
 
