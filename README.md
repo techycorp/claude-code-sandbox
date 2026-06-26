@@ -361,8 +361,8 @@ The `default` VM's address can change if the VM is recreated — re-check `colim
 
 **Host container proxy:**
 - Only `docker` commands are permitted
-- Only subcommands matching `allowed_commands` are executed
-- `exec` with `env`, `sh`, `bash`, `printenv` is always blocked regardless of whitelist
+- Only subcommands matching `allowed_commands` are executed — enforcement is a **pure allowlist** (token-prefix match in `daemon_logic.py`); there is no separate denylist
+- Anything not matched by a pattern is rejected, including `env`/`sh`/`bash`/`printenv` — but *only* because no pattern admits them, not via an override. A loose pattern (a bare `docker exec *`, or any entry whose pinned program can spawn a shell or eval) re-opens them. See [The Whitelist Is the Ultimate Authority](#the-whitelist-is-the-ultimate-authority).
 
 ## Security Model
 
