@@ -7,29 +7,40 @@ Claude Code in autonomous mode is powerful but risky — it can read secrets, ex
 - **VM-level filesystem isolation** — Claude Code only sees the directories you explicitly mount into the VM. Sensitive paths like `~/.ssh` and `~/.aws` are invisible even to malicious compose files.
 - **Two-VM architecture (macOS)** — sandbox and dev containers run in separate Colima VMs with no shared filesystem
 - **Network firewall** — blocks all outbound traffic except Anthropic API, GitHub, npm, DNS, and SSH
-- **[aca-safety-net](https://github.com/techycorp/aca-safety-net)** — a fast Rust hook that blocks secrets access, dangerous commands, and environment variable exposure at the Claude Code layer
+- **[aca-safety-net](https://github.com/techycorp/aca-safety-net)** — an opt-in Rust hook that flags secrets access, dangerous commands, and environment variable exposure at the Claude Code layer (a best-effort guardrail you wire into `settings.json`, not a hard boundary)
 - **Host container proxy** — lets the agent restart and manage your local Docker services through a configurable whitelist
 - **Voice mode** — microphone access via PulseAudio passthrough (macOS)
 - **Clipboard image paste** — paste images (e.g. screenshots) into the container with Ctrl+V, same as outside the sandbox (macOS)
 - **Session persistence** — conversation history and credentials survive container restarts and image rebuilds
+
+## This Is an Opinionated Workflow
+
+Read this before adopting it — the security model only holds if your setup matches these assumptions.
+
+- **Your dev environment runs in Docker.** The sandbox interacts with your running app services *exclusively* through `docker` commands routed to the host. There is no SSH-into-a-box, no running app processes directly on the host, no non-Docker orchestration. If your services don't run as containers, the host-proxy model gives the agent nothing to talk to.
+- **`docker` is the only channel to the app side, and it's allowlist-gated.** The sandbox's `docker` is a [shim](#how-the-proxy-works) that forwards to a host daemon, which runs only the exact subcommands you list in `allowed_commands`. The agent cannot run arbitrary commands against your dev VM — only the docker subcommands you approve. This allowlist is the *entire* boundary on the app side: there is **no denylist underneath it**, so a loose pattern (e.g. a bare `docker exec *`, or any entry whose program can spawn a shell or `eval`) hands the agent everything that container can reach. See [The Whitelist Is the Ultimate Authority](#the-whitelist-is-the-ultimate-authority).
+- **The sandbox only sees the directories you mount — and you are responsible for what's in them.** Filesystem isolation means Claude can't reach paths you don't mount. It does **not** scrub the paths you *do* mount: if a mounted source directory contains plaintext secrets (`.env`, `.envrc`, deploy secret files), Claude can read them. The "no secrets on disk" guarantee is yours to uphold by keeping plaintext secrets out of mounted trees (encrypt at rest, or store them outside the mount) — `aca-safety-net` is a pattern-matching guardrail, not a hard boundary.
+- **`--dangerously-skip-permissions` is the point.** This exists to run Claude Code fully autonomously. The containment above is what makes that defensible — but it's perimeter containment, not a guarantee about everything the agent does *inside* the perimeter.
+
+If your workflow doesn't run on Docker, or you need finer-grained control of what the agent can do on the app side than a docker-subcommand allowlist provides, this probably isn't the right tool.
 
 ## Relationship to the Official Anthropic Devcontainer
 
 Anthropic publishes an [official devcontainer](https://github.com/anthropics/claude-code/tree/main/.devcontainer) for running Claude Code securely. This project is heavily inspired by it and shares the same core security model:
 
 - Same base image (`node:20`)
-- Same network firewall (`init-firewall.sh`) with the same whitelist
+- Same network firewall (`init-firewall.sh`) — CSB's is descended from theirs, then hardened (resolver-scoped DNS, no blanket SSH egress, fail-closed on init failure)
 - Same non-root user (`node`)
 - Same approach to running `--dangerously-skip-permissions` safely
 
 **What this adds:**
 
-- **Two-VM isolation (macOS)** — sandbox and dev containers run in separate Colima VMs. Even a full container escape in the sandbox cannot access your dev containers or home directory.
-- **Host container proxy** — the agent can restart and manage your local Docker services through a configurable whitelist. The official devcontainer has no mechanism for this.
-- **[aca-safety-net](https://github.com/techycorp/aca-safety-net)** — a Rust-based Claude Code hook for static analysis of dangerous commands, secrets access, and env exposure.
+- **Two-VM isolation (macOS)** — sandbox and dev containers run in separate Colima VMs. Even a full container escape in the sandbox cannot access your dev containers or home directory. The official devcontainer is a single container.
+- **Host container proxy** — the agent can restart and manage your local Docker services through a configurable allowlist; the official devcontainer has no mechanism for this. Docker only — the host daemon hard-rejects any non-`docker` command.
 - **Standalone CLI (`csb`)** — runs without VS Code or the devcontainer toolchain. Works from any terminal.
-- **Voice mode** — PulseAudio passthrough so `/voice` works inside the container (macOS).
-- **Session persistence** — Claude session data and credentials stored on the host, survive rebuilds.
+- **Voice mode (macOS)** — PulseAudio passthrough so `/voice` works inside the container. The official devcontainer ships no audio stack and passes through no audio device.
+- **Session data as plain host files** — `~/.local/share/claude-code-sandbox/claude` is a host bind mount, not a Docker-managed volume. Both projects persist sessions across rebuilds (theirs via named volumes), but CSB's lives as plain files on your Mac — survives `colima delete csb` and `docker volume prune`, and is directly inspectable and backupable.
+- **[aca-safety-net](https://github.com/techycorp/aca-safety-net)** — a Rust Claude Code hook for static analysis of dangerous commands and secret access. It's a **best-effort guardrail you opt into** (wire it into `~/.claude/settings.json`; it does nothing until you do), not an enforcement boundary — pattern-matchers are bypassable.
 
 If you use VS Code and don't need the host container proxy, the official devcontainer may be simpler to set up.
 
