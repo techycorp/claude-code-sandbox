@@ -399,3 +399,7 @@ cd claude-code-sandbox
 ```
 
 This removes the old container, rebuilds the image, and reinstalls `csb`. Session data and Claude authentication are preserved.
+
+## License
+
+Released under the [MIT License](LICENSE). Copyright (c) 2026 TechyCorp.
