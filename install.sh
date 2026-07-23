@@ -17,12 +17,45 @@ warn()  { echo -e "${YELLOW}warning:${NC} $1"; }
 error() { echo -e "${RED}error:${NC} $1" >&2; exit 1; }
 
 info "Checking dependencies..."
-command -v podman &>/dev/null || error "Podman is not installed. See https://podman.io/getting-started/installation"
+command -v docker &>/dev/null || error "Docker is not installed. On macOS install Colima (https://github.com/abiosoft/colima). On Linux install Docker."
+
+# Colima's csb profile auto-activates itself as the Docker context on
+# startup, stealing it from whatever was active (e.g. 'default'). Restore
+# it on exit regardless of how this script finishes.
+ORIGINAL_CONTEXT="$(docker context show 2>/dev/null || true)"
+restore_context() {
+    if [ -n "$ORIGINAL_CONTEXT" ]; then
+        docker context use "$ORIGINAL_CONTEXT" &>/dev/null || true
+    fi
+}
+trap restore_context EXIT
 command -v python3 &>/dev/null || error "Python 3.11+ is required."
 python3 -c "import tomllib" 2>/dev/null || error "Python 3.11+ is required (tomllib missing)."
+python3 -c "import yaml" 2>/dev/null || pip install pyyaml -q || error "Failed to install pyyaml. Run: pip install pyyaml"
 
 info "Building container image..."
-podman build -t "$IMAGE" "$REPO_DIR"
+if [[ "$(uname)" == "Darwin" ]]; then
+    CSB_SOCKET="$HOME/.colima/csb/docker.sock"
+    if [ ! -S "$CSB_SOCKET" ]; then
+        echo ""
+        echo -e "${RED}error:${NC} Colima 'csb' instance not found."
+        echo ""
+        echo "    Create it with your workspace directories and session storage mounted, then re-run install:"
+        echo ""
+        echo "    colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \\"
+        echo "      --mount ~/.local/share/claude-code-sandbox:w \\"
+        echo "      --mount ~/src/my-project:w \\"
+        echo "      --mount ~/src/another-project:w"
+        echo ""
+        exit 1
+    fi
+    DOCKER_HOST="unix://$CSB_SOCKET" docker build -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
+else
+    docker build -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
+fi
+
+info "Removing existing sandbox container..."
+DOCKER_HOST="unix://$HOME/.colima/csb/docker.sock" docker rm -f claude-sandbox 2>/dev/null || true
 
 info "Installing csb and csb-daemon to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
@@ -42,28 +75,26 @@ if [ ! -f "$CONFIG_FILE" ]; then
     cat > "$CONFIG_FILE" <<'EOF'
 image = "claude-code-sandbox:latest"
 
-# Add your workspaces here. Each will be mounted at /workspaces/<name> inside the container.
-[workspaces]
-# my-project = "~/src/my-project"
+# Linux only: directories to mount into the container at the same path.
+# On macOS, mounts are read automatically from the Colima 'csb' VM config.
+# [mounts]
+# paths = ["~/src"]
 
-# Podman/Docker commands the sandbox is allowed to run on the host.
+# CIDRs to allow through the sandbox's firewall, in addition to the
+# container's own host network. Use this to reach services on another
+# Colima VM (e.g. 'default') via its vmnet address — run
+# `colima status default` to find its IP, then list the /24 here.
+# Applied live on every `csb` launch — no rebuild or container recreate needed.
+# dev_networks = ["192.168.64.0/24"]
+
+# hostname:ip pairs to add to /etc/hosts inside the sandbox, e.g. when app
+# logic depends on a specific domain that should resolve to a dev VM.
+# Applied live on every `csb` launch — no rebuild or container recreate needed.
+# dev_hosts = ["myapp.local:192.168.64.3"]
+
+# Docker commands the sandbox is allowed to run on the host.
 [proxy]
 allowed_commands = [
-  "podman ps",
-  "podman images",
-  "podman logs",
-  "podman build",
-  "podman pull",
-  "podman compose up",
-  "podman compose down",
-  "podman compose restart",
-  "podman compose logs",
-  "podman compose ps",
-  "podman volume ls",
-  "podman volume inspect",
-  "podman volume prune",
-  "podman system prune",
-  "podman system df",
   "docker ps",
   "docker images",
   "docker logs",
@@ -80,11 +111,12 @@ allowed_commands = [
   "docker system prune",
   "docker system df",
 
-  # Wildcards are supported — * matches any single token (e.g. container name)
-  # "podman exec * bundle exec rails",
-  # "podman exec * bundle exec rspec",
-  # "podman exec * bundle exec rake",
-  # "docker exec * bundle exec rails",
+  # Wildcards are supported — * matches any single token (e.g. container name).
+  # Enumerate exact safe subcommands rather than leaving an interpreter's
+  # prefix open — see "The Whitelist Is the Ultimate Authority" in the README.
+  # "docker exec * bundle exec rails db:migrate",
+  # "docker exec * bundle exec rspec",
+  # "docker exec * yarn add",
 ]
 EOF
     warn "Edit $CONFIG_FILE to add your workspaces."
@@ -97,14 +129,6 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo "    Add this to your shell config (~/.zshrc or ~/.bashrc):"
     echo ""
     echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
-    echo ""
-fi
-
-if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-    warn "ANTHROPIC_API_KEY is not set."
-    echo "    Add this to your shell config:"
-    echo ""
-    echo "    export ANTHROPIC_API_KEY=sk-ant-..."
     echo ""
 fi
 
