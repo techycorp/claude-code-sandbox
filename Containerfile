@@ -1,5 +1,7 @@
 FROM rust:slim AS aca-builder
 ARG ACA_SAFETY_NET_REF=master
+# Commit SHA of ACA_SAFETY_NET_REF; a new value busts the cache for the install below
+ARG ACA_SAFETY_NET_SHA=
 RUN cargo install --git https://github.com/techycorp/aca-safety-net --branch ${ACA_SAFETY_NET_REF} aca-safety-net
 
 FROM node:20
@@ -87,6 +89,10 @@ RUN npm install -g playwright && \
   npx playwright install chromium
 
 COPY --from=aca-builder /usr/local/cargo/bin/aca-safety-net /usr/local/bin/
+# Enforce the aca-safety-net PreToolUse hook as administrator policy. Managed
+# settings live outside ~/.claude (the per-session mount), so they are stable
+# across launches and the user cannot drop them. root-owned 0644 via COPY.
+COPY managed-settings.json /etc/claude-code/managed-settings.json
 COPY .zshrc /home/node/.zshrc
 COPY shims/docker /usr/local/bin/docker
 COPY shims/xclip /usr/local/bin/xclip
@@ -100,5 +106,12 @@ RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/fix-claude-perms.sh 
   printf "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh\nnode ALL=(root) NOPASSWD: /usr/local/bin/fix-claude-perms.sh\nDefaults env_keep += \"CSB_DEV_NETWORKS\"\n" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall
 USER node
+
+# Keep all Claude Code state (incl. .claude.json) inside the mounted ~/.claude
+# dir. Without this, .claude.json lands at the home root, which is not mounted,
+# so it's wiped on every reinstall and the OAuth login has to be redone.
+# Placed last on purpose: an ENV earlier in the file would invalidate the
+# Docker layer cache for the steps below it (notably the playwright install).
+ENV CLAUDE_CONFIG_DIR=/home/node/.claude
 
 ENTRYPOINT ["/usr/local/bin/start.sh"]

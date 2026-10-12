@@ -1,0 +1,12 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Edit|Write|Grep|Glob|NotebookEdit",
+        "hooks": [
+          { "type": "command", "command": "aca-safety-net", "timeout": 1 }
+        ]
+      }
+    ]
+  }
+}

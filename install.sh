@@ -34,6 +34,10 @@ python3 -c "import tomllib" 2>/dev/null || error "Python 3.11+ is required (toml
 python3 -c "import yaml" 2>/dev/null || pip install pyyaml -q || error "Failed to install pyyaml. Run: pip install pyyaml"
 
 info "Building container image..."
+ACA_SAFETY_NET_REF="${ACA_SAFETY_NET_REF:-master}"
+ACA_SAFETY_NET_SHA="$(git ls-remote https://github.com/techycorp/aca-safety-net "$ACA_SAFETY_NET_REF" | cut -f1 | head -n1)"
+[ -n "$ACA_SAFETY_NET_SHA" ] || error "Could not resolve aca-safety-net ref '$ACA_SAFETY_NET_REF'."
+BUILD_ARGS=(--build-arg "ACA_SAFETY_NET_REF=$ACA_SAFETY_NET_REF" --build-arg "ACA_SAFETY_NET_SHA=$ACA_SAFETY_NET_SHA")
 if [[ "$(uname)" == "Darwin" ]]; then
     CSB_SOCKET="$HOME/.colima/csb/docker.sock"
     if [ ! -S "$CSB_SOCKET" ]; then
@@ -49,9 +53,9 @@ if [[ "$(uname)" == "Darwin" ]]; then
         echo ""
         exit 1
     fi
-    DOCKER_HOST="unix://$CSB_SOCKET" docker build -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
+    DOCKER_HOST="unix://$CSB_SOCKET" docker build "${BUILD_ARGS[@]}" -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
 else
-    docker build -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
+    docker build "${BUILD_ARGS[@]}" -f "$REPO_DIR/Containerfile" -t "$IMAGE" "$REPO_DIR"
 fi
 
 info "Removing existing sandbox container..."
