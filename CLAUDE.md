@@ -26,14 +26,18 @@ Only whitelisted subcommands are permitted. If a command is rejected, the proxy 
 
 `localhost` inside this container refers to the container itself, not the host machine.
 
-`host.docker.internal` only reaches services inside this sandbox's own VM — it does **not** reach dev services running in a separate Colima VM. If `host.docker.internal:<port>` fails to connect, do not retry with workarounds. Instead, check the `CSB_DEV_NETWORKS` environment variable — if it's set, the dev VM's network has been allowed through the firewall, but you still need its specific IP. Ask the user for the address (they can find it with `colima status default` on the host) and use that directly, e.g. `curl http://<dev-vm-ip>:<port>`.
+Dev services (your containers in the `default` Colima VM) are reachable at **`host.docker.internal:<port>`** — that's the Mac, which forwards every published container port down to the dev containers. Use it for anything where the hostname doesn't matter (API calls, verifying a restart).
+
+Do **not** use the dev VM's own vmnet IP (`192.168.64.x`, e.g. from `colima status default`). macOS Sequoia/Tahoe blocks VM-to-VM traffic, so that path does not work — connections just hang and return HTTP 000. All sandbox→dev traffic goes through the Mac instead.
+
+Some apps need a specific product domain (e.g. `myapp.local`) for TLS, cookies, CORS, or OAuth to work. Those are handled by `dev_hosts` in config.toml, which maps the domain to the Mac gateway inside the sandbox. If such a hostname won't resolve, ask the user to add it to `dev_hosts`.
 
 ## Verifying Changes
 
-After restarting a service, curl the dev VM's IP directly (not `host.docker.internal`):
+After restarting a service, curl it through the Mac — never the dev VM's IP:
 
 ```bash
-curl http://<dev-vm-ip>:<port>
+curl http://host.docker.internal:<port>
 ```
 
 ## Security

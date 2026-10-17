@@ -77,7 +77,7 @@ export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
 
 **Start the default VM** for your dev containers:
 ```bash
-colima start
+colima start --vm-type vz --network-address
 ```
 
 **Restrict the default VM's filesystem** by editing `~/.colima/default/colima.yaml`:
@@ -102,10 +102,12 @@ Docker runs natively on Linux with no VM overhead.
 **macOS only:** Before installing, create the `csb` Colima VM with your session storage and project directories mounted. Mount the parent directory containing your projects — not individual project folders.
 
 ```bash
-colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \
+colima start csb --vm-type vz --network-address --cpu 4 --memory 4 --disk 20 --activate=false \
   --mount ~/.local/share/claude-code-sandbox:w \
   --mount /absolute/path/to/your/projects:w
 ```
+
+`--vm-type vz` is pinned deliberately. Colima's default VM type varies by version and can be `qemu`, which may not be installed (`colima start` then fails with `qemu-img not found`). Both VMs use `vz` (Apple Virtualization.framework), which also enables the faster `virtiofs` mounts. Pinning it keeps VM creation from silently picking a different backend. The `default` VM above pins it for the same reason.
 
 If you skip this, `./install.sh` will print the exact command with a reminder.
 

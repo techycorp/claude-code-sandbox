@@ -41,7 +41,7 @@ def ensure_colima():
     print("", file=sys.stderr)
     print("Create it with your directories and session storage mounted, then re-run install:", file=sys.stderr)
     print("", file=sys.stderr)
-    print("    colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \\", file=sys.stderr)
+    print("    colima start csb --vm-type vz --network-address --cpu 4 --memory 4 --disk 20 --activate=false \\", file=sys.stderr)
     print("      --mount ~/.local/share/claude-code-sandbox:w \\", file=sys.stderr)
     print("      --mount ~/src:w", file=sys.stderr)
     print("", file=sys.stderr)
@@ -72,15 +72,18 @@ def get_linux_mounts(config):
 
 
 def get_dev_networks(config):
-    """User-specified CIDRs (e.g. another Colima VM's vmnet network) to allow
-    through the sandbox's firewall. Set explicitly in config.toml — not
-    auto-detected, since guessing which VM is "the dev one" is unreliable."""
+    """User-specified CIDRs to allow through the sandbox's default-deny firewall
+    (e.g. a Tailscale tailnet, VPN subnet, or LAN reachable through the Mac).
+    Opens the firewall only — it can't reach other Colima VMs, since macOS
+    blocks VM-to-VM. Set explicitly in config.toml; never auto-detected."""
     return config.get("dev_networks", [])
 
 
 def get_dev_hosts(config):
     """User-specified hostname:ip pairs to add to /etc/hosts inside the
-    container, e.g. for app-specific domains that resolve to a dev VM."""
+    container, for apps that need a specific product domain. Point them at the
+    Mac gateway (what host.docker.internal resolves to), which forwards to the
+    dev containers — not a dev VM's vmnet IP, which macOS blocks VM-to-VM."""
     return config.get("dev_hosts", [])
 
 

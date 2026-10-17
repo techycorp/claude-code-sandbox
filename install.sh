@@ -46,7 +46,7 @@ if [[ "$(uname)" == "Darwin" ]]; then
         echo ""
         echo "    Create it with your workspace directories and session storage mounted, then re-run install:"
         echo ""
-        echo "    colima start csb --cpu 4 --memory 4 --disk 20 --activate=false \\"
+        echo "    colima start csb --vm-type vz --network-address --cpu 4 --memory 4 --disk 20 --activate=false \\"
         echo "      --mount ~/.local/share/claude-code-sandbox:w \\"
         echo "      --mount ~/src/my-project:w \\"
         echo "      --mount ~/src/another-project:w"
@@ -84,17 +84,21 @@ image = "claude-code-sandbox:latest"
 # [mounts]
 # paths = ["~/src"]
 
-# CIDRs to allow through the sandbox's firewall, in addition to the
-# container's own host network. Use this to reach services on another
-# Colima VM (e.g. 'default') via its vmnet address — run
-# `colima status default` to find its IP, then list the /24 here.
-# Applied live on every `csb` launch — no rebuild or container recreate needed.
-# dev_networks = ["192.168.64.0/24"]
+# Extra CIDRs to allow through the sandbox's default-deny firewall, on top of
+# the host network that's already allowed. Use this for external networks the
+# sandbox would otherwise be blocked from reaching *through the Mac* — e.g. a
+# Tailscale tailnet, a VPN subnet, or a LAN device. This only opens the
+# firewall; it does not create a route, so it can't reach other Colima VMs
+# (macOS blocks VM-to-VM). Applied live on every `csb` launch.
+# dev_networks = ["100.64.0.0/10"]
 
-# hostname:ip pairs to add to /etc/hosts inside the sandbox, e.g. when app
-# logic depends on a specific domain that should resolve to a dev VM.
+# hostname:ip pairs to add to /etc/hosts inside the sandbox. Use this when an
+# app needs a specific product domain (for TLS, cookies, CORS, or OAuth) —
+# point it at the Mac gateway (192.168.5.2, what host.docker.internal resolves
+# to), which forwards to your dev containers. Don't point it at a dev VM's
+# vmnet IP — macOS blocks VM-to-VM, so that path won't connect.
 # Applied live on every `csb` launch — no rebuild or container recreate needed.
-# dev_hosts = ["myapp.local:192.168.64.3"]
+# dev_hosts = ["myapp.local:192.168.5.2"]
 
 # Docker commands the sandbox is allowed to run on the host.
 [proxy]
@@ -122,6 +126,34 @@ allowed_commands = [
   # "docker exec * bundle exec rspec",
   # "docker exec * yarn add",
 ]
+
+# Secrets injected into `docker compose up` by the host-side proxy, fetched at
+# run time and never written to disk or exposed to the sandbox. One table per
+# secret. `env` is the variable the compose file interpolates (${env}).
+# source = "infisical": needs key/project_id/infisical_env; the daemon must hold
+#   a read-only machine-identity token for that project.
+# source = "keychain" (macOS): store once with
+#   `security add-generic-password -s <service> -T /usr/bin/security -w`.
+# [[proxy.compose_secrets]]
+# env = "GOOGLE_MAPS_API_KEY"
+# source = "infisical"
+# key = "GOOGLE_MAPS_API_KEY"
+# project_id = "your-stormsnap-project-id"
+# infisical_env = "dev"
+#
+# [[proxy.compose_secrets]]
+# env = "RESEND_API_KEY"
+# source = "keychain"
+# service = "csb-dev-resend"
+#
+# Auth for source="infisical": the daemon reads Universal Auth client id/secret
+# from the Keychain and mints a short-lived token per fetch (nothing persisted).
+# Create a read-only machine identity scoped to the project's dev env, then store
+# its creds: `security add-generic-password -s csb-infisical-client-id -T /usr/bin/security -w`
+# (and -client-secret).
+# [proxy.infisical]
+# client_id_service = "csb-infisical-client-id"
+# client_secret_service = "csb-infisical-client-secret"
 EOF
     warn "Edit $CONFIG_FILE to add your workspaces."
 else

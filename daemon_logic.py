@@ -15,6 +15,14 @@ def load_allowed():
     return load_config().get("proxy", {}).get("allowed_commands", [])
 
 
+def load_compose_secrets():
+    return load_config().get("proxy", {}).get("compose_secrets", [])
+
+
+def load_infisical_auth():
+    return load_config().get("proxy", {}).get("infisical", {})
+
+
 def translate_cwd(cwd: str) -> str:
     # Container paths match host paths — no translation needed
     return cwd if cwd else None

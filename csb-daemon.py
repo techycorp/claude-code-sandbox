@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from daemon_logic import is_allowed, load_allowed, translate_cwd
+from daemon_logic import is_allowed, load_allowed, load_compose_secrets, load_infisical_auth, translate_cwd
 
 MACOS = platform.system() == "Darwin"
 DEFAULT_COLIMA_SOCKET = Path.home() / ".colima" / "default" / "docker.sock"
@@ -22,6 +22,57 @@ def docker_env():
     if MACOS and DEFAULT_COLIMA_SOCKET.exists():
         env["DOCKER_HOST"] = f"unix://{DEFAULT_COLIMA_SOCKET}"
     return env
+
+
+def _keychain(service):
+    r = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _infisical_token(auth):
+    """Mint a short-lived Infisical token from Universal Auth creds held in the
+    Keychain. Nothing is persisted — the token lives only for this fetch."""
+    client_id = _keychain(auth.get("client_id_service", ""))
+    client_secret = _keychain(auth.get("client_secret_service", ""))
+    if not (client_id and client_secret):
+        return None
+    r = subprocess.run(["infisical", "login", "--method=universal-auth",
+                        f"--client-id={client_id}", f"--client-secret={client_secret}",
+                        "--plain", "--silent"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _infisical(key, project_id, env_name, token):
+    r = subprocess.run(["infisical", "secrets", "get", key, "--plain",
+                        f"--env={env_name}", f"--projectId={project_id}",
+                        f"--token={token}"],
+                       capture_output=True, text=True)
+    return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def fetch_compose_secrets():
+    """Resolve the config.toml [[proxy.compose_secrets]] mappings from their
+    host-side backends: Keychain, or Infisical authed via Keychain-held Universal
+    Auth creds. Returns {ENV_NAME: value}; values live only in the env of the
+    compose process we hand them to — never on disk, never in the sandbox."""
+    out = {}
+    token = None  # minted lazily, once, only if an infisical secret is configured
+    for s in load_compose_secrets():
+        source = s.get("source")
+        if source == "keychain":
+            value = _keychain(s["service"])
+        elif source == "infisical":
+            if token is None:
+                token = _infisical_token(load_infisical_auth())
+            value = _infisical(s["key"], s["project_id"], s["infisical_env"], token) if token else None
+        else:
+            continue
+        if value:
+            out[s["env"]] = value
+    return out
+
 
 PROXY_HOST = "127.0.0.1"
 PROXY_PORT = 9876
@@ -128,7 +179,11 @@ class Handler(socketserver.StreamRequestHandler):
 
             host_cwd = translate_cwd(cwd)
 
-            proc = subprocess.run(args, capture_output=True, text=True, cwd=host_cwd, env=docker_env())
+            env = docker_env()
+            if args[:3] == ["docker", "compose", "up"]:
+                env.update(fetch_compose_secrets())
+
+            proc = subprocess.run(args, capture_output=True, text=True, cwd=host_cwd, env=env)
 
             if proc.stdout:
                 self._send("stdout", proc.stdout)
