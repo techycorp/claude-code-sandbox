@@ -64,7 +64,11 @@ else
 fi
 
 info "Removing existing sandbox container..."
-DOCKER_HOST="unix://$HOME/.colima/csb/docker.sock" docker rm -f claude-sandbox 2>/dev/null || true
+if [[ "$(uname)" == "Darwin" ]]; then
+    DOCKER_HOST="unix://$HOME/.colima/csb/docker.sock" docker rm -f claude-sandbox 2>/dev/null || true
+else
+    docker rm -f claude-sandbox 2>/dev/null || true
+fi
 
 info "Installing csb and csb-daemon to $BIN_DIR..."
 mkdir -p "$BIN_DIR"
@@ -134,28 +138,41 @@ allowed_commands = [
 
 # Secrets injected into `docker compose up` by the host-side proxy, fetched at
 # run time and never written to disk or exposed to the sandbox. One table per
-# secret. `env` is the variable the compose file interpolates (${env}).
-# source = "infisical": needs key/project_id/infisical_env; the daemon must hold
-#   a read-only machine-identity token for that project.
-# source = "keychain" (macOS): store once with
-#   `security add-generic-password -s <service> -T /usr/bin/security -w`.
+# secret. `env` is the variable the compose file interpolates (${env}). A
+# configured secret that can't be resolved aborts `compose up` loudly — compose
+# never starts without it. Sources:
+#   "command"  — run any shell command; its stdout (trimmed) is the secret. The
+#      portable backend (pass, vault, a plain file) and the one to use on a host
+#      without an OS keystore, e.g. headless Linux.
+#   "keychain" — host OS keystore. macOS: store once with
+#      `security add-generic-password -s <service> -T /usr/bin/security -w`.
+#      Linux: install secret-tool (libsecret), then
+#      `secret-tool store --label=csb service <service>`.
+#   "infisical" — needs key/project_id/infisical_env; auth config below.
 # [[proxy.compose_secrets]]
 # env = "GOOGLE_MAPS_API_KEY"
-# source = "infisical"
-# key = "GOOGLE_MAPS_API_KEY"
-# project_id = "your-stormsnap-project-id"
-# infisical_env = "dev"
+# source = "command"
+# command = "pass show csb/google-maps"
 #
 # [[proxy.compose_secrets]]
 # env = "RESEND_API_KEY"
 # source = "keychain"
 # service = "csb-dev-resend"
 #
+# [[proxy.compose_secrets]]
+# env = "STRIPE_KEY"
+# source = "infisical"
+# key = "STRIPE_KEY"
+# project_id = "your-project-id"
+# infisical_env = "dev"
+#
 # Auth for source="infisical": the daemon reads Universal Auth client id/secret
-# from the Keychain and mints a short-lived token per fetch (nothing persisted).
+# from the host keystore (macOS `security` / Linux secret-tool, as under
+# "keychain" above) and mints a short-lived token per fetch (nothing persisted).
 # Create a read-only machine identity scoped to the project's dev env, then store
-# its creds: `security add-generic-password -s csb-infisical-client-id -T /usr/bin/security -w`
-# (and -client-secret).
+# its creds under these service names, e.g. on macOS
+# `security add-generic-password -s csb-infisical-client-id -T /usr/bin/security -w`
+# (and -client-secret), or on Linux `secret-tool store --label=csb service csb-infisical-client-id`.
 # [proxy.infisical]
 # client_id_service = "csb-infisical-client-id"
 # client_secret_service = "csb-infisical-client-secret"

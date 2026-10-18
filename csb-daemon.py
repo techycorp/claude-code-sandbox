@@ -24,17 +24,37 @@ def docker_env():
     return env
 
 
-def _keychain(service):
-    r = subprocess.run(["security", "find-generic-password", "-s", service, "-w"],
-                       capture_output=True, text=True)
+def host_secret(service):
+    """Read a secret from the host OS keystore: macOS Keychain, or on Linux the
+    Secret Service (libsecret) via secret-tool. None if the tool is absent or the
+    item isn't found. Store with `security add-generic-password -s <svc> ...` on
+    macOS, or `secret-tool store --label=csb service <svc>` on Linux."""
+    if MACOS:
+        cmd = ["security", "find-generic-password", "-s", service, "-w"]
+    elif shutil.which("secret-tool"):
+        cmd = ["secret-tool", "lookup", "service", service]
+    else:
+        return None
+    r = subprocess.run(cmd, capture_output=True, text=True)
     return r.stdout.strip() if r.returncode == 0 and r.stdout.strip() else None
+
+
+def _command_secret(command):
+    """Run a user-supplied shell command (from config) and take its stdout as the
+    secret — the portable backend (pass, vault, a file, …) for hosts without an
+    OS keystore. Returns (value, error_detail)."""
+    r = subprocess.run(command, shell=True, capture_output=True, text=True)
+    value = r.stdout.strip()
+    if r.returncode != 0 or not value:
+        return None, f"command failed ({r.stderr.strip() or f'exit {r.returncode}, no output'})"
+    return value, None
 
 
 def _infisical_token(auth):
     """Mint a short-lived Infisical token from Universal Auth creds held in the
-    Keychain. Nothing is persisted — the token lives only for this fetch."""
-    client_id = _keychain(auth.get("client_id_service", ""))
-    client_secret = _keychain(auth.get("client_secret_service", ""))
+    host keystore. Nothing is persisted — the token lives only for this fetch."""
+    client_id = host_secret(auth.get("client_id_service", ""))
+    client_secret = host_secret(auth.get("client_secret_service", ""))
     if not (client_id and client_secret):
         return None
     r = subprocess.run(["infisical", "login", "--method=universal-auth",
@@ -53,25 +73,43 @@ def _infisical(key, project_id, env_name, token):
 
 
 def fetch_compose_secrets():
-    """Resolve the config.toml [[proxy.compose_secrets]] mappings from their
-    host-side backends: Keychain, or Infisical authed via Keychain-held Universal
-    Auth creds. Returns {ENV_NAME: value}; values live only in the env of the
-    compose process we hand them to — never on disk, never in the sandbox."""
-    out = {}
+    """Resolve config.toml [[proxy.compose_secrets]] from their host-side backends:
+    the OS keystore ("keychain" — macOS Keychain / Linux secret-tool), a shell
+    "command", or "infisical". Returns (values, errors); values live only in the
+    compose process's env, never on disk or in the sandbox. A configured secret
+    that can't be resolved is an error, never a silent omission — the caller must
+    not start compose without it."""
+    out, errors = {}, []
     token = None  # minted lazily, once, only if an infisical secret is configured
     for s in load_compose_secrets():
+        name = s.get("env", "?")
         source = s.get("source")
-        if source == "keychain":
-            value = _keychain(s["service"])
-        elif source == "infisical":
-            if token is None:
-                token = _infisical_token(load_infisical_auth())
-            value = _infisical(s["key"], s["project_id"], s["infisical_env"], token) if token else None
-        else:
+        try:
+            if source == "keychain":
+                value = host_secret(s["service"])
+                detail = ('not found in keystore (stored? on Linux: install '
+                          'secret-tool, or switch to source="command")')
+            elif source == "command":
+                value, detail = _command_secret(s["command"])
+            elif source == "infisical":
+                if token is None:
+                    token = _infisical_token(load_infisical_auth())
+                if not token:
+                    errors.append(f"{name}: infisical auth failed (check [proxy.infisical] creds)")
+                    continue
+                value = _infisical(s["key"], s["project_id"], s["infisical_env"], token)
+                detail = "infisical returned nothing (check key/project_id/infisical_env)"
+            else:
+                errors.append(f"{name}: unknown source {source!r}")
+                continue
+        except KeyError as e:
+            errors.append(f"{name}: missing required field {e.args[0]!r} for source {source!r}")
             continue
         if value:
-            out[s["env"]] = value
-    return out
+            out[name] = value
+        else:
+            errors.append(f"{name}: {detail}")
+    return out, errors
 
 
 PROXY_HOST = "127.0.0.1"
@@ -181,7 +219,13 @@ class Handler(socketserver.StreamRequestHandler):
 
             env = docker_env()
             if args[:3] == ["docker", "compose", "up"]:
-                env.update(fetch_compose_secrets())
+                values, errors = fetch_compose_secrets()
+                if errors:
+                    self._send("stderr", "[csb] secret injection failed; compose not started:\n"
+                               + "".join(f"      - {e}\n" for e in errors))
+                    self._exit(1)
+                    return
+                env.update(values)
 
             proc = subprocess.run(args, capture_output=True, text=True, cwd=host_cwd, env=env)
 

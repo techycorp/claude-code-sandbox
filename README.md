@@ -230,12 +230,20 @@ This applies to any tool with a similar eval-from-argv escape hatch — `rails r
 
 ### How the Proxy Works
 
-The `csb-daemon` runs on the Mac host and routes docker commands to the appropriate VM:
+The `csb-daemon` runs on the host and routes docker commands to the appropriate VM:
 
 - **Sandbox container** (`csb` VM) — where Claude Code runs
 - **App containers** (`default` VM) — where your dev services run
 
 When the agent runs `docker compose up` from a project directory, the proxy uses the same path on the host (no translation needed — paths match between container and host) and runs the command against the `default` VM.
+
+On `docker compose up`, the daemon also injects any secrets configured under `[[proxy.compose_secrets]]` in `config.toml`, fetching each host-side and handing it only to the compose process — never to disk or the sandbox. Each secret names a `source`:
+
+- **`command`** — runs a shell command you supply and uses its stdout (e.g. `pass show csb/google-maps`). The portable backend, and the one to use on a host without an OS keystore (headless Linux).
+- **`keychain`** — the host OS keystore: macOS Keychain via `security`, or Linux [Secret Service](https://specifications.freedesktop.org/secret-service/) via `secret-tool` (install `libsecret-tools`).
+- **`infisical`** — pulled from an Infisical project (auth creds themselves come from the keystore).
+
+A configured secret that can't be resolved aborts `compose up` with an error — it never starts the service without it. See the commented examples in `config.toml`.
 
 ## Claude Code Hooks (aca-safety-net)
 
