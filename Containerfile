@@ -88,6 +88,10 @@ RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 RUN npm install -g playwright && \
   npx playwright install chromium
 
+# agent-vault client — the `cc` wrapper uses it to route claude's egress through
+# the credential broker when csb has dropped a session token.
+COPY --from=infisical/agent-vault:latest /usr/local/bin/agent-vault /usr/local/bin/agent-vault
+
 COPY --from=aca-builder /usr/local/cargo/bin/aca-safety-net /usr/local/bin/
 # Enforce the aca-safety-net PreToolUse hook as administrator policy. Managed
 # settings live outside ~/.claude (the per-session mount), so they are stable
@@ -99,9 +103,11 @@ COPY shims/xclip /usr/local/bin/xclip
 COPY shims/rec /usr/local/bin/rec
 COPY init-firewall.sh /usr/local/bin/
 COPY fix-claude-perms.sh /usr/local/bin/
+COPY install-agent-vault-ca.sh /usr/local/bin/
 COPY start.sh /usr/local/bin/
 USER root
 RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/fix-claude-perms.sh \
+      /usr/local/bin/install-agent-vault-ca.sh \
       /usr/local/bin/start.sh /usr/local/bin/docker /usr/local/bin/xclip /usr/local/bin/rec && \
   printf "node ALL=(root) NOPASSWD: /usr/local/bin/init-firewall.sh\nnode ALL=(root) NOPASSWD: /usr/local/bin/fix-claude-perms.sh\nDefaults env_keep += \"CSB_DEV_NETWORKS\"\n" > /etc/sudoers.d/node-firewall && \
   chmod 0440 /etc/sudoers.d/node-firewall

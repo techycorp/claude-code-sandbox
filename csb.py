@@ -22,6 +22,23 @@ _daemon_dir = Path(__file__).parent
 DAEMON = _daemon_dir / "csb-daemon.py" if (_daemon_dir / "csb-daemon.py").exists() else _daemon_dir / "csb-daemon"
 SANDBOX_CLAUDE_MD = Path(__file__).parent / "CLAUDE.md"
 
+# agent-vault brokering. Enabled per-machine by installing the agent-vault binary
+# and logging in; the host mints a short-lived vault session each launch and drops
+# it here for the container's `cc` wrapper. No config entry — presence is opt-in.
+AGENT_VAULT_VAULT = "default"
+AGENT_VAULT_TTL = 28800  # 8h; re-minted on each csb launch
+AV_TOKEN_FILE = SESSION_DIR / ".av-token"
+AV_CA_SCRIPT = "/usr/local/bin/install-agent-vault-ca.sh"
+AV_NOTE_START = "<!-- csb-agent-vault-start -->"
+AV_NOTE_END = "<!-- csb-agent-vault-end -->"
+AV_NOTE = """## Brokered egress
+
+Some hosts are reached through a credential-injecting proxy. For those hosts do
+NOT supply your own credentials — no `-u user:pass`, no `Authorization` header,
+no API key in a header or query string. Make the plain request to the real URL
+and the proxy injects the correct auth. Supplying your own is unnecessary and
+can conflict with the injected credentials."""
+
 
 def load_config():
     if not CONFIG_PATH.exists():
@@ -85,6 +102,63 @@ def get_dev_hosts(config):
     Mac gateway (what host.docker.internal resolves to), which forwards to the
     dev containers — not a dev VM's vmnet IP, which macOS blocks VM-to-VM."""
     return config.get("dev_hosts", [])
+
+
+def mint_agent_vault_token():
+    """Host-side (Mac or Linux): if agent-vault is set up here, mint a short-lived
+    vault session and write it to the session dir for the container's `cc` wrapper.
+    Returns True when brokering is enabled. The durable login stays on the host;
+    only this ephemeral token enters the sandbox. Installed-but-unmintable is a
+    hard error, never a silent downgrade to unbrokered egress."""
+    if not shutil.which("agent-vault"):
+        AV_TOKEN_FILE.unlink(missing_ok=True)
+        return False
+    result = subprocess.run(
+        ["agent-vault", "vault", "token", "--vault", AGENT_VAULT_VAULT, "--ttl", str(AGENT_VAULT_TTL)],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"Error: agent-vault is installed but minting a session failed:\n{result.stderr.strip()}", file=sys.stderr)
+        print("Fix: run `agent-vault auth login` and ensure a vault named 'default' exists,", file=sys.stderr)
+        print("or remove the agent-vault binary to disable brokering.", file=sys.stderr)
+        sys.exit(1)
+    SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    AV_TOKEN_FILE.write_text(result.stdout.strip() + "\n")
+    AV_TOKEN_FILE.chmod(0o600)
+    return True
+
+
+def inject_broker_note():
+    """Append a managed note to the mounted CLAUDE.md telling the agent not to
+    send its own credentials to brokered hosts. Runs after sync_settings() has
+    refreshed the file from the repo, so it stays absent when brokering is off
+    (the file is re-copied clean each launch) and never accumulates."""
+    md = SESSION_DIR / "CLAUDE.md"
+    text = md.read_text() if md.exists() else ""
+    if AV_NOTE_START in text:  # defensive: drop any prior block before re-adding
+        head, _, rest = text.partition(AV_NOTE_START)
+        _, _, tail = rest.partition(AV_NOTE_END)
+        text = head.rstrip() + tail
+    block = f"{AV_NOTE_START}\n{AV_NOTE}\n{AV_NOTE_END}\n"
+    md.write_text(text.rstrip() + "\n\n" + block)
+
+
+def install_agent_vault_ca(name, env):
+    """Fetch the broker's MITM CA on the host and trust it inside the container,
+    so the agent's TLS to upstreams (re-signed by the proxy) validates."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".pem") as tf:
+        fetched = subprocess.run(["agent-vault", "ca", "fetch", "-o", tf.name], capture_output=True, text=True)
+        if fetched.returncode != 0:
+            print(f"[csb] warning: could not fetch agent-vault CA: {fetched.stderr.strip()}", file=sys.stderr)
+            return
+        cert = Path(tf.name).read_text()
+    result = subprocess.run(
+        ["docker", "exec", "-i", "-u", "root", name, AV_CA_SCRIPT],
+        input=cert, env=env, capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        print(f"[csb] warning: failed to install agent-vault CA: {result.stderr.strip()}", file=sys.stderr)
 
 
 HOSTS_MARKER_START = "# csb-managed-start"
@@ -218,6 +292,9 @@ def main():
     csb_mounts_env = ":".join(str(p) for p in workspace_mounts)
     csb_dev_networks_env = ":".join(get_dev_networks(config))
     dev_hosts = get_dev_hosts(config)
+    agent_vault = mint_agent_vault_token()
+    if agent_vault:
+        inject_broker_note()
 
     daemon = start_daemon()
     pulse = start_pulseaudio()
@@ -261,6 +338,8 @@ def main():
 
         subprocess.run(["docker", "start", container_name], env=env, check=True, capture_output=True)
         apply_dynamic_config(container_name, env, csb_dev_networks_env, dev_hosts)
+        if agent_vault:
+            install_agent_vault_ca(container_name, env)
 
         result = subprocess.run(["docker", "attach", container_name], env=env)
         sys.exit(result.returncode)
