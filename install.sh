@@ -38,6 +38,11 @@ ACA_SAFETY_NET_REF="${ACA_SAFETY_NET_REF:-master}"
 ACA_SAFETY_NET_SHA="$(git ls-remote https://github.com/techycorp/aca-safety-net "$ACA_SAFETY_NET_REF" | cut -f1 | head -n1)"
 [ -n "$ACA_SAFETY_NET_SHA" ] || error "Could not resolve aca-safety-net ref '$ACA_SAFETY_NET_REF'."
 BUILD_ARGS=(--build-arg "ACA_SAFETY_NET_REF=$ACA_SAFETY_NET_REF" --build-arg "ACA_SAFETY_NET_SHA=$ACA_SAFETY_NET_SHA")
+# Pass the resolved version so a new release busts the cached npm layer.
+CLAUDE_CODE_VERSION="${CLAUDE_CODE_VERSION:-$(npm view @anthropic-ai/claude-code version 2>/dev/null)}"
+[ -n "$CLAUDE_CODE_VERSION" ] || error "Could not resolve latest claude-code version (is npm available / online?)."
+BUILD_ARGS+=(--build-arg "CLAUDE_CODE_VERSION=$CLAUDE_CODE_VERSION")
+info "Building with Claude Code $CLAUDE_CODE_VERSION"
 if [[ "$(uname)" == "Darwin" ]]; then
     CSB_SOCKET="$HOME/.colima/csb/docker.sock"
     if [ ! -S "$CSB_SOCKET" ]; then
