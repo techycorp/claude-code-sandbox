@@ -14,6 +14,11 @@ COLIMA_SOCKET = Path.home() / ".colima" / COLIMA_INSTANCE / "docker.sock"
 COLIMA_YAML = Path.home() / ".colima" / COLIMA_INSTANCE / "colima.yaml"
 
 PULSE_PORT = 4713
+# Restrict anonymous pulseaudio access to loopback and the Colima VM. vz with
+# --network-address reaches the Mac from either the lima user net (192.168.5/24)
+# or the vmnet shared net (192.168.64/24), so allow both; without this the TCP
+# module listens on *:4713 and takes anonymous connections from the whole LAN.
+PULSE_ACL = "127.0.0.1;192.168.5.0/24;192.168.64.0/24"
 CONFIG_PATH = Path.home() / ".config" / "claude-code-sandbox" / "config.toml"
 SETTINGS_JSON = Path.home() / ".claude" / "settings.json"
 SESSION_DIR = Path.home() / ".local" / "share" / "claude-code-sandbox" / "claude"
@@ -171,7 +176,7 @@ def start_pulseaudio():
         return None
     proc = subprocess.Popen([
         "pulseaudio",
-        "--load=module-native-protocol-tcp auth-anonymous=1",
+        f"--load=module-native-protocol-tcp auth-anonymous=1 auth-ip-acl={PULSE_ACL}",
         "--exit-idle-time=-1",
         "--daemonize=no",
         "--log-target=stderr",
